@@ -22,7 +22,7 @@ Built to demonstrate practical data engineering skills: pandas-based transformat
 
 ```bash
 # 1. Clone
-git clone https://github.com/peterkamau-dev/data-pipeline.git
+git clone https://github.com/Academypeep/data-pipeline.git
 cd data-pipeline
 
 # 2. Install dependencies
