@@ -1,0 +1,26 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Data artifacts
+data/*.csv
+!data/.gitkeep
+*.tmp
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
