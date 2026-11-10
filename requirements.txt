@@ -1,3 +1,4 @@
-pandas>=2.0
-numpy>=1.24
-pytest>=7.4
+# Production ETL Pipeline Dependencies
+pandas>=2.2.0,<4.0.0
+numpy>=1.26.0,<3.0.0
+pytest>=8.0.0,<10.0.0
