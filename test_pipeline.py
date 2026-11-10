@@ -9,16 +9,27 @@ import pandas as pd
 import pytest
 
 from pipeline import (
+    AtomicLoader,
+    AtomicWriteError,
+    ConfigurationError,
+    DataPipelineError,
     ExtractionError,
-    LoadError,
+    Extractor,
+    FileCorruptedError,
+    PathSecurityError,
     PipelineConfig,
     PipelineError,
+    SchemaValidator,
+    SchemaViolationError,
+    StorageIOError,
+    Transformer,
     ValidationError,
     analyse,
     extract,
     load,
     main,
     run_pipeline,
+    sanitize_and_validate_path,
     transform,
     validate_schema,
 )
@@ -38,7 +49,7 @@ def sample_csv(tmp_path: Path) -> str:
     return str(path)
 
 
-# ── EXTRACT TESTS ─────────────────────────────────────────────────────────────
+# ── EXTRACT & SECURITY TESTS ──────────────────────────────────────────────────
 
 def test_extract_loads_correct_row_count(sample_csv: str) -> None:
     df = extract(sample_csv)
@@ -56,7 +67,7 @@ def test_extract_missing_file_raises_extraction_error(tmp_path: Path) -> None:
 def test_extract_empty_file_raises_extraction_error(tmp_path: Path) -> None:
     empty_file = tmp_path / "empty.csv"
     empty_file.write_text("")
-    with pytest.raises(ExtractionError, match="Input file is empty"):
+    with pytest.raises(FileCorruptedError, match="Input file is empty"):
         extract(str(empty_file))
 
 
@@ -64,6 +75,35 @@ def test_extract_invalid_csv_raises_extraction_error(tmp_path: Path) -> None:
     # A directory path passed as a file
     with pytest.raises(ExtractionError):
         extract(str(tmp_path))
+
+
+def test_path_sanitization_null_byte() -> None:
+    with pytest.raises(PathSecurityError, match="null byte"):
+        sanitize_and_validate_path("some_file\0.csv")
+
+
+def test_path_sanitization_directory_traversal(tmp_path: Path) -> None:
+    base = tmp_path / "sandbox"
+    base.mkdir()
+    outside_file = tmp_path / "secret.csv"
+    outside_file.write_text("secret\n123\n")
+
+    with pytest.raises(PathSecurityError, match="Path traversal detected"):
+        sanitize_and_validate_path(str(outside_file), allowed_base_dir=str(base))
+
+
+def test_extract_file_size_limit_exceeded(tmp_path: Path) -> None:
+    big_file = tmp_path / "big.csv"
+    big_file.write_text("a" * 1000)
+    with pytest.raises(ExtractionError, match="exceeds maximum allowed size"):
+        Extractor.extract_dataframe(str(big_file), max_size_bytes=500)
+
+
+def test_extractor_chunks(sample_csv: str) -> None:
+    chunks = list(Extractor.extract_chunks(sample_csv, chunk_size=2))
+    assert len(chunks) == 3
+    total_rows = sum(len(c) for c in chunks)
+    assert total_rows == 5
 
 
 # ── VALIDATE SCHEMA TESTS ────────────────────────────────────────────────────
@@ -83,8 +123,13 @@ def test_validate_schema_fails_when_missing_column() -> None:
         "Date": ["2024-01-01"],
         "Region": ["Nairobi"]
     })
-    with pytest.raises(ValidationError, match="Missing required schema columns"):
+    with pytest.raises(SchemaViolationError, match="Missing required schema columns"):
         validate_schema(df, ("date", "region", "category", "revenue"))
+
+
+def test_validate_schema_invalid_dataframe() -> None:
+    with pytest.raises(ValidationError, match="Expected a valid pandas DataFrame"):
+        SchemaValidator.validate(None, ("col1",))  # type: ignore
 
 
 # ── TRANSFORM TESTS ──────────────────────────────────────────────────────────
@@ -171,8 +216,7 @@ def test_load_writes_file_atomically(sample_csv: str, tmp_path: Path) -> None:
 
 def test_load_fails_on_unwritable_directory() -> None:
     df = pd.DataFrame({"col": [1, 2, 3]})
-    # Writing to a path where parent cannot be created (e.g., treating a file as directory)
-    with pytest.raises(LoadError):
+    with pytest.raises(StorageIOError):
         load(df, "/dev/null/forbidden/out.csv")
 
 
@@ -186,6 +230,8 @@ def test_run_pipeline_success(sample_csv: str, tmp_path: Path) -> None:
     assert metrics["rows_in"] == 5
     assert metrics["rows_out"] == 3
     assert metrics["integrity_pct"] == 60.0
+    assert "extract" in metrics["stages"]
+    assert "transform" in metrics["stages"]
     assert os.path.exists(out)
 
 
@@ -194,7 +240,7 @@ def test_run_pipeline_schema_failure(tmp_path: Path) -> None:
     bad_csv.write_text("wrong_col,other_col\n1,2\n")
     out = str(tmp_path / "out.csv")
 
-    with pytest.raises(PipelineError, match="Missing required schema columns"):
+    with pytest.raises(DataPipelineError, match="Missing required schema columns"):
         run_pipeline(input_path=str(bad_csv), output_path=out)
 
 
@@ -219,12 +265,16 @@ def test_main_cli_validation_failure_exit_code(tmp_path: Path) -> None:
     assert exit_code == 3
 
 
+def test_main_cli_config_error_exit_code() -> None:
+    exit_code = main(["--input", " ", "--output", "out.csv"])
+    assert exit_code == 5
+
+
 def test_main_cli_json_logging(sample_csv: str, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     out = str(tmp_path / "json_log_out.csv")
     exit_code = main(["--input", sample_csv, "--output", out, "--json-logs"])
     assert exit_code == 0
     captured = capsys.readouterr()
-    # At least one log line should be valid JSON
     found_json = False
     for line in captured.out.strip().split("\n"):
         if line.strip():
